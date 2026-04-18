@@ -1,0 +1,27 @@
+[
+  {
+    "t": 2.5,
+    "frame_idx": 75,
+    "action": "recolor",
+    "target": "wall",
+    "params": {
+      "color": [70, 130, 180]
+    }
+  },
+  {
+    "t": 5.0,
+    "frame_idx": 150,
+    "action": "retexture",
+    "target": "floor",
+    "params": {
+      "texture_file": "hardwood.jpg"
+    }
+  },
+  {
+    "t": 8.0,
+    "frame_idx": 240,
+    "action": "remove",
+    "target": "bed",
+    "params": {}
+  }
+]
