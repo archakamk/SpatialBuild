@@ -16,7 +16,7 @@ models/
 *.ckpt
 
 # Data (videos, frames, masks)
-data/
+
 tests/*.mp4
 tests/*.jpg
 tests/*.png
