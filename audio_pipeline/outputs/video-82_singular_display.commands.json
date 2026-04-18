@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": 18.64,
+    "action": "add",
+    "target": "carpet",
+    "params": {}
+  },
+  {
+    "timestamp": 20.72,
+    "action": "add",
+    "target": "sofa in the corner",
+    "params": {}
+  }
+]
