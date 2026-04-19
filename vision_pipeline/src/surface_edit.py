@@ -202,14 +202,30 @@ class SurfaceEditor:
             ov_rgb = cv2.cvtColor(ov_bgr, cv2.COLOR_BGR2RGB)
             ov_alpha = np.ones(ov_rgb.shape[:2], dtype=np.float32)
 
-        # Bounding rect of the mask
+        # Bounding rect of the full mask (used later to clip output)
         coords = cv2.findNonZero(mask)
         if coords is None:
             return image.copy()
         bx, by, bw, bh = cv2.boundingRect(coords)
 
-        # Scale overlay to fit, preserving aspect ratio
-        target_dim = int(scale * min(bw, bh))
+        # Find the largest clear rectangle within the mask: erode to
+        # pull away from edges/furniture, then pick the biggest contour.
+        eroded = cv2.erode(
+            mask,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (61, 61)),
+            iterations=1,
+        )
+        contours, _ = cv2.findContours(
+            eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            crx, cry, crw, crh = cv2.boundingRect(largest)
+        else:
+            crx, cry, crw, crh = bx, by, bw, bh
+
+        # Scale overlay to fit the clear rect, preserving aspect ratio
+        target_dim = int(scale * min(crw, crh))
         if target_dim < 1:
             return image.copy()
 
@@ -219,9 +235,9 @@ class SurfaceEditor:
         ov_rgb = cv2.resize(ov_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
         ov_alpha = cv2.resize(ov_alpha, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Centre within the bounding rect
-        cx = bx + bw // 2 - new_w // 2
-        cy = by + bh // 2 - new_h // 2
+        # Centre horizontally within the clear rect, upper-third vertically
+        cx = crx + crw // 2 - new_w // 2
+        cy = int(cry + crh * 0.35) - new_h // 2
 
         # Clip to image bounds
         img_h, img_w = image.shape[:2]
@@ -241,9 +257,11 @@ class SurfaceEditor:
         wall_mask_region = mask[dst_y1:dst_y2, dst_x1:dst_x2].astype(np.float32) / 255.0
         effective_alpha = al_crop * wall_mask_region
 
-        # Feather edges of the placement
+        # Feather edges of the placement, then re-clip to the original mask
+        # so the blur doesn't bleed outside the wall boundary.
         ksize = 5
         effective_alpha = cv2.GaussianBlur(effective_alpha, (ksize, ksize), 0)
+        effective_alpha = effective_alpha * wall_mask_region
         effective_alpha = effective_alpha[:, :, np.newaxis]
 
         # Brightness matching: shift overlay V toward original V
