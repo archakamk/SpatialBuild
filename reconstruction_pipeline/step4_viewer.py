@@ -89,21 +89,32 @@ def generate_viewer(
 
 
 def serve(directory: str, port: int = 8080):
-    """Start a local HTTP server so the viewer can load assets."""
+    """
+    Copy splat.ply and viewer.html into a serve directory (if not already there)
+    and start a local HTTP server on the given port.
+    """
     os.chdir(directory)
 
     handler = http.server.SimpleHTTPRequestHandler
-    # Allow CORS for local file loading
+
     class CORSHandler(handler):
+        """Allow cross-origin requests so the viewer can load .ply files."""
         def end_headers(self):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache")
             super().end_headers()
+        def log_message(self, fmt, *a):
+            # Quieter logging — only show errors
+            if int(a[1]) >= 400:
+                super().log_message(fmt, *a)
 
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("0.0.0.0", port), CORSHandler) as httpd:
         url = f"http://localhost:{port}/viewer.html"
-        print(f"\n  Serving at {url}")
-        print(f"  Press Ctrl+C to stop.\n")
+        print(f"\n  ┌─────────────────────────────────────────┐")
+        print(f"  │  Open in browser: {url:<22s}│")
+        print(f"  │  Press Ctrl+C to stop                    │")
+        print(f"  └─────────────────────────────────────────┘\n")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

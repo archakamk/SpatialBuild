@@ -98,6 +98,7 @@ controls.target.set(0, 1, 0);
 const keys = {};
 window.addEventListener('keydown', e => keys[e.code] = true);
 window.addEventListener('keyup',   e => keys[e.code] = false);
+
 function updateMovement(dt) {
   const speed = 5 * dt;
   const dir = new THREE.Vector3();
@@ -170,7 +171,6 @@ scene.add(furnitureGroup);
 FURNITURE_URLS.forEach((url, i) => {
   gltfLoader.load(url, gltf => {
     const model = gltf.scene;
-    // Place pieces side by side at y=0
     model.position.set(i * 2, 0, 0);
     model.scale.setScalar(1.0);
     furnitureGroup.add(model);

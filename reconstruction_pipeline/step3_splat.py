@@ -2,8 +2,8 @@
 """
 step3_splat.py — Train a gaussian splat from a COLMAP sparse model using OpenSplat.
 
-Locates the OpenSplat binary (ROCm or CPU build), runs training, and validates
-the output .ply file.
+The OpenSplat binary is pre-built at the hardcoded path below.
+Sets HIP_VISIBLE_DEVICES for AMD Instinct MI300 (gfx942) with ROCm 7.0.
 """
 
 import argparse
@@ -13,66 +13,10 @@ import subprocess
 import sys
 import time
 
-
-SEARCH_PATHS = [
-    # populated by setup.sh
-    None,
-    "/workspace/SpatialBuild/OpenSplat/build/opensplat",
-    os.path.expanduser("~/OpenSplat/build/opensplat"),
-]
-
-
-def _read_config_bin() -> str | None:
-    """Read OpenSplat binary path from setup.sh config."""
-    config = os.path.join(os.path.dirname(__file__), ".pipeline_config")
-    if not os.path.isfile(config):
-        return None
-    for line in open(config):
-        if line.startswith("OPENSPLAT_BIN="):
-            val = line.strip().split("=", 1)[1]
-            return val if val and os.path.isfile(val) else None
-    return None
-
-
-def find_opensplat() -> str | None:
-    """Search for the opensplat binary in known locations."""
-    # Config file first
-    from_config = _read_config_bin()
-    if from_config:
-        return from_config
-    # Known paths
-    for p in SEARCH_PATHS:
-        if p and os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    # $PATH
-    which = shutil.which("opensplat")
-    if which:
-        return which
-    return None
-
-
-def detect_hip_env() -> dict[str, str]:
-    """Return environment variables needed for AMD HIP/ROCm."""
-    env = dict(os.environ)
-    if os.path.isdir("/opt/rocm"):
-        env["HIP_VISIBLE_DEVICES"] = env.get("HIP_VISIBLE_DEVICES", "0")
-        # Detect override version from rocminfo if possible
-        try:
-            info = subprocess.check_output(
-                ["/opt/rocm/bin/rocminfo"], text=True, timeout=10
-            )
-            for line in info.splitlines():
-                if "gfx" in line.lower():
-                    gfx = line.strip().split()[-1]
-                    # Map to major.minor.patch for HSA override
-                    if gfx.startswith("gfx"):
-                        digits = gfx[3:]
-                        if len(digits) >= 3:
-                            env["HSA_OVERRIDE_GFX_VERSION"] = f"{digits[0]}.{digits[1]}.{digits[2]}"
-                    break
-        except Exception:
-            pass
-    return env
+OPENSPLAT_BIN = (
+    "/workspace/SpatialBuild/reconstruction_pipeline/"
+    "OpenSplat/build/OpenSplat/build/opensplat"
+)
 
 
 def train_splat(
@@ -85,39 +29,35 @@ def train_splat(
     Train gaussian splat.  Returns summary dict:
       { "success", "ply_path", "file_size_mb", "est_gaussians" }
     """
-    if opensplat_bin is None:
-        opensplat_bin = find_opensplat()
+    binary = opensplat_bin or OPENSPLAT_BIN
 
-    if opensplat_bin is None:
-        msg = (
-            "OpenSplat binary not found.\n"
-            "  Run:  bash setup.sh   to build it, or set --opensplat-bin manually.\n"
-            "  For CPU-only (slow):  build OpenSplat without ROCm flags.\n"
-        )
-        print(f"[ERROR] {msg}")
-        return {"success": False, "error": "OpenSplat not found"}
+    if not os.path.isfile(binary):
+        print(f"[ERROR] OpenSplat binary not found at: {binary}")
+        print("  Expected location: " + OPENSPLAT_BIN)
+        print("  Run  bash setup.sh  or rebuild OpenSplat manually.")
+        return {"success": False, "error": f"OpenSplat not found at {binary}"}
 
     os.makedirs(output_dir, exist_ok=True)
     ply_path = os.path.join(output_dir, "splat.ply")
 
-    # The COLMAP dir must contain cameras.bin, images.bin, points3D.bin.
-    # OpenSplat expects the *parent* of sparse/0 (the project root with images/).
-    # Detect whether user passed sparse/0 directly or the workspace root.
+    # OpenSplat expects the COLMAP workspace root (the dir containing images/
+    # and sparse/).  If the caller passed sparse/0 directly, walk up two levels.
     if os.path.isfile(os.path.join(colmap_dir, "cameras.bin")):
-        # User passed sparse/0 — OpenSplat wants the workspace root (two levels up).
         project_root = os.path.dirname(os.path.dirname(colmap_dir))
     else:
         project_root = colmap_dir
 
     cmd = [
-        opensplat_bin,
+        binary,
         project_root,
         "--output", ply_path,
         "-n", str(iterations),
         "--save-every", "0",
     ]
 
-    env = detect_hip_env()
+    env = dict(os.environ)
+    env["HIP_VISIBLE_DEVICES"] = env.get("HIP_VISIBLE_DEVICES", "0")
+
     print(f"    ▸ Training gaussian splat ({iterations} iters) …")
     print(f"      $ {' '.join(cmd)}")
 
@@ -127,7 +67,7 @@ def train_splat(
 
     if result.returncode != 0:
         print(f"    ✗ OpenSplat failed ({elapsed:.1f}s)")
-        for line in result.stderr.strip().splitlines()[-20:]:
+        for line in result.stderr.strip().splitlines()[-30:]:
             print(f"      {line}")
         for line in result.stdout.strip().splitlines()[-20:]:
             print(f"      {line}")
@@ -135,8 +75,8 @@ def train_splat(
 
     print(f"    ✓ Training done ({elapsed:.1f}s)")
 
+    # OpenSplat may write splat.ply into the project root instead of --output
     if not os.path.isfile(ply_path):
-        # OpenSplat may have written to a default name in the project root
         alt = os.path.join(project_root, "splat.ply")
         if os.path.isfile(alt):
             shutil.move(alt, ply_path)
@@ -144,8 +84,9 @@ def train_splat(
             print("    ✗ splat.ply not found after training")
             return {"success": False, "error": "No output PLY file"}
 
-    size_mb = os.path.getsize(ply_path) / (1024 * 1024)
-    est_gaussians = int(os.path.getsize(ply_path) / 248)
+    size_bytes = os.path.getsize(ply_path)
+    size_mb = size_bytes / (1024 * 1024)
+    est_gaussians = int(size_bytes / 248)
     print(f"  Output: {ply_path}")
     print(f"  Size:   {size_mb:.1f} MB  (~{est_gaussians:,} gaussians)")
 
@@ -161,10 +102,11 @@ def train_splat(
 # ── CLI ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Train gaussian splat with OpenSplat")
-    parser.add_argument("--colmap-dir", required=True, help="Path to COLMAP sparse/0/ or workspace root")
+    parser.add_argument("--colmap-dir", required=True,
+                        help="COLMAP sparse/0/ directory or workspace root")
     parser.add_argument("--output", required=True, help="Output directory for splat.ply")
     parser.add_argument("--iterations", "-n", type=int, default=2000)
-    parser.add_argument("--opensplat-bin", default=None, help="Path to opensplat binary")
+    parser.add_argument("--opensplat-bin", default=None, help="Override path to opensplat binary")
     args = parser.parse_args()
     summary = train_splat(args.colmap_dir, args.output, args.iterations, args.opensplat_bin)
     print(f"\n  Result: {summary}")

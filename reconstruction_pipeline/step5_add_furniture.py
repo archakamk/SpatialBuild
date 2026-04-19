@@ -3,7 +3,7 @@
 step5_add_furniture.py — Generate 3D furniture meshes from text descriptions
 via the Tripo3D API and composite them into the viewer.
 
-Falls back to placeholder .glb files if the API is unavailable.
+Falls back to placeholder .glb files (trimesh boxes) if the API is unavailable.
 """
 
 import argparse
@@ -16,7 +16,6 @@ import requests
 
 
 TRIPO_API_BASE = "https://api.tripo3d.ai/v2/openapi"
-# Set your API key via env var or pass --api-key
 TRIPO_API_KEY_ENV = "TRIPO3D_API_KEY"
 
 
@@ -33,13 +32,17 @@ def generate_mesh_tripo(prompt: str, api_key: str, output_path: str, timeout: in
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    # Step 1: Create generation task
-    print(f"    ▸ Tripo3D: requesting mesh for "{prompt}" …")
+    print(f'    ▸ Tripo3D: requesting mesh for "{prompt}" …')
     try:
         resp = requests.post(
             f"{TRIPO_API_BASE}/task",
             headers=headers,
-            json={"type": "text_to_model", "prompt": prompt, "model_version": "default", "output_format": "glb"},
+            json={
+                "type": "text_to_model",
+                "prompt": prompt,
+                "model_version": "default",
+                "output_format": "glb",
+            },
             timeout=30,
         )
         resp.raise_for_status()
@@ -48,11 +51,12 @@ def generate_mesh_tripo(prompt: str, api_key: str, output_path: str, timeout: in
         print(f"    ✗ Tripo3D task creation failed: {e}")
         return False
 
-    # Step 2: Poll until done
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
-            resp = requests.get(f"{TRIPO_API_BASE}/task/{task_id}", headers=headers, timeout=15)
+            resp = requests.get(
+                f"{TRIPO_API_BASE}/task/{task_id}", headers=headers, timeout=15
+            )
             data = resp.json().get("data", {})
             status = data.get("status", "unknown")
             if status == "success":
@@ -60,8 +64,7 @@ def generate_mesh_tripo(prompt: str, api_key: str, output_path: str, timeout: in
                 if not model_url:
                     print("    ✗ Task succeeded but no model URL in response")
                     return False
-                # Download
-                print(f"    ▸ Downloading mesh …")
+                print("    ▸ Downloading mesh …")
                 dl = requests.get(model_url, timeout=60)
                 with open(output_path, "wb") as f:
                     f.write(dl.content)
@@ -80,10 +83,10 @@ def generate_mesh_tripo(prompt: str, api_key: str, output_path: str, timeout: in
     return False
 
 
-def create_placeholder_glb(output_path: str, label: str = "furniture"):
+def create_placeholder_glb(output_path: str, label: str = "furniture") -> bool:
     """
-    Write a minimal placeholder .glb so the pipeline can proceed without the API.
-    Uses trimesh to create a simple coloured box.
+    Write a minimal placeholder .glb (a coloured box) so the pipeline can
+    proceed without the Tripo3D API.
     """
     try:
         import trimesh
@@ -103,7 +106,7 @@ def process_add_commands(
     api_key: str | None = None,
 ) -> list[str]:
     """
-    Read a commands.json, find all "add" actions, generate .glb for each.
+    Read a commands.json, find all "add" actions, generate a .glb for each.
     Returns list of .glb file paths.
     """
     with open(commands_json, "r") as f:
@@ -127,10 +130,8 @@ def process_add_commands(
         success = False
         if key:
             success = generate_mesh_tripo(prompt, key, out_file)
-
         if not success:
             create_placeholder_glb(out_file, target)
-
         if os.path.isfile(out_file):
             glb_paths.append(out_file)
 
@@ -144,8 +145,9 @@ def add_single(
 ) -> str | None:
     """Generate a single furniture mesh from a free-text description."""
     os.makedirs(output_dir, exist_ok=True)
-    safe_name = "".join(c if c.isalnum() or c in " _-" else "" for c in description)[:40].strip().replace(" ", "_")
-    out_file = os.path.join(output_dir, f"{safe_name or 'furniture'}.glb")
+    safe = "".join(c if c.isalnum() or c in " _-" else "" for c in description)
+    safe = safe[:40].strip().replace(" ", "_") or "furniture"
+    out_file = os.path.join(output_dir, f"{safe}.glb")
 
     key = _get_api_key(api_key)
     success = False
@@ -161,10 +163,12 @@ def add_single(
 def main():
     parser = argparse.ArgumentParser(description="Generate 3D furniture from text (Tripo3D)")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--command", help='Free text description, e.g. "blue velvet mid-century sofa"')
+    group.add_argument("--command", help='Free text, e.g. "blue velvet mid-century sofa"')
     group.add_argument("--commands-json", help="Path to commands.json with add actions")
-    parser.add_argument("--output", default="./output/furniture", help="Output directory for .glb files")
-    parser.add_argument("--api-key", default=None, help="Tripo3D API key (or set TRIPO3D_API_KEY)")
+    parser.add_argument("--output", default="./output/furniture",
+                        help="Output directory for .glb files")
+    parser.add_argument("--api-key", default=None,
+                        help="Tripo3D API key (or set TRIPO3D_API_KEY)")
     args = parser.parse_args()
 
     if args.commands_json:

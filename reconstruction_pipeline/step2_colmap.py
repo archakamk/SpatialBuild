@@ -2,8 +2,8 @@
 """
 step2_colmap.py — Run COLMAP sparse reconstruction on prepared frames.
 
-Stages: feature extraction → sequential matching → sparse mapping → undistortion.
-Automatically falls back from GPU to CPU if SIFT GPU fails (common on AMD).
+Stages: feature extraction → sequential matching → sparse mapping.
+Automatically falls back from GPU to CPU SIFT if GPU fails (common on AMD).
 """
 
 import argparse
@@ -14,24 +14,25 @@ import time
 
 
 def _run(cmd: list[str], label: str, timeout: int = 1800) -> subprocess.CompletedProcess:
-    """Run a subprocess with logging.  Returns CompletedProcess or exits."""
+    """Run a subprocess with full logging on failure."""
     print(f"    ▸ {label}")
     print(f"      $ {' '.join(cmd)}")
     t0 = time.time()
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     elapsed = time.time() - t0
+
     if result.returncode != 0:
         print(f"    ✗ {label} failed ({elapsed:.1f}s)")
-        print(f"      STDERR (last 30 lines):\n")
-        for line in result.stderr.strip().splitlines()[-30:]:
-            print(f"        {line}")
-        return result
-    print(f"    ✓ {label} done ({elapsed:.1f}s)")
+        if result.stdout.strip():
+            print("      STDOUT (last 20 lines):")
+            for line in result.stdout.strip().splitlines()[-20:]:
+                print(f"        {line}")
+        if result.stderr.strip():
+            print("      STDERR (last 30 lines):")
+            for line in result.stderr.strip().splitlines()[-30:]:
+                print(f"        {line}")
+    else:
+        print(f"    ✓ {label} done ({elapsed:.1f}s)")
     return result
 
 
@@ -49,7 +50,7 @@ def feature_extraction(workspace: str, use_gpu: bool = True) -> bool:
     ]
     result = _run(cmd, "Feature extraction" + (" (GPU)" if use_gpu else " (CPU)"))
     if result.returncode != 0 and use_gpu:
-        print("    ↻ GPU SIFT failed, retrying with CPU …")
+        print("    ↻ GPU SIFT failed — retrying with CPU …")
         return feature_extraction(workspace, use_gpu=False)
     return result.returncode == 0
 
@@ -61,11 +62,11 @@ def sequential_matching(workspace: str, use_gpu: bool = True) -> bool:
         "--database_path", db,
         "--SiftMatching.use_gpu", "1" if use_gpu else "0",
         "--SequentialMatching.overlap", "10",
-        "--SequentialMatching.loop_detection", "0",
+        "--SequentialMatching.loop_detection", "1",
     ]
     result = _run(cmd, "Sequential matching" + (" (GPU)" if use_gpu else " (CPU)"))
     if result.returncode != 0 and use_gpu:
-        print("    ↻ GPU matching failed, retrying with CPU …")
+        print("    ↻ GPU matching failed — retrying with CPU …")
         return sequential_matching(workspace, use_gpu=False)
     return result.returncode == 0
 
@@ -95,7 +96,7 @@ def sparse_mapping(workspace: str) -> bool:
 
 
 def analyze_model(workspace: str) -> dict:
-    """Run model_analyzer and parse output.  Returns stats dict."""
+    """Run model_analyzer and parse output."""
     model_dir = os.path.join(workspace, "sparse", "0")
     result = _run(
         ["colmap", "model_analyzer", "--path", model_dir],
@@ -113,8 +114,7 @@ def analyze_model(workspace: str) -> dict:
             if nums:
                 stats["points"] = max(nums)
         if "mean reprojection" in low:
-            parts = line.split()
-            for p in parts:
+            for p in line.split():
                 try:
                     stats["mean_reprojection_error"] = float(p)
                 except ValueError:
@@ -122,59 +122,45 @@ def analyze_model(workspace: str) -> dict:
     return stats
 
 
-def undistort(workspace: str) -> bool:
-    dense_dir = os.path.join(workspace, "dense")
-    cmd = [
-        "colmap", "image_undistorter",
-        "--image_path", os.path.join(workspace, "images"),
-        "--input_path", os.path.join(workspace, "sparse", "0"),
-        "--output_path", dense_dir,
-        "--output_type", "COLMAP",
-    ]
-    result = _run(cmd, "Image undistortion")
-    return result.returncode == 0
-
-
-def run_colmap(workspace: str, skip_undistort: bool = False) -> dict:
+def run_colmap(workspace: str) -> dict:
     """
     Full COLMAP pipeline.  Returns summary dict:
       { "success", "sparse_dir", "registered_images", "points", "mean_reproj_error" }
     """
-    if not os.path.isdir(os.path.join(workspace, "images")):
+    images_path = os.path.join(workspace, "images")
+    if not os.path.isdir(images_path):
         print(f"[ERROR] No images/ directory in {workspace}")
         sys.exit(1)
 
     num_input = len([
-        f for f in os.listdir(os.path.join(workspace, "images"))
+        f for f in os.listdir(images_path)
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     ])
     print(f"  Input images: {num_input}")
 
-    # Stage 1: Feature extraction
     if not feature_extraction(workspace):
         return {"success": False, "error": "Feature extraction failed"}
 
-    # Stage 2: Matching
     if not sequential_matching(workspace):
         return {"success": False, "error": "Feature matching failed"}
 
-    # Stage 3: Sparse mapping
     if not sparse_mapping(workspace):
-        return {"success": False, "error": "Sparse mapping failed. Try more overlap between frames or a different camera model."}
+        return {
+            "success": False,
+            "error": (
+                "Sparse mapping failed — no images registered.  "
+                "Try more overlap between frames or a different camera model."
+            ),
+        }
 
-    # Stage 4: Analyze
     stats = analyze_model(workspace)
     print(f"  Registered: {stats['registered_images']} / {num_input} images")
     print(f"  3D points:  {stats['points']}")
     print(f"  Reproj err: {stats['mean_reprojection_error']:.4f} px")
 
-    if stats["registered_images"] < num_input * 0.5:
+    if num_input > 0 and stats["registered_images"] < num_input * 0.5:
         print("  ⚠  WARNING: Less than 50% of images registered — reconstruction may be poor.")
         print("     Suggestions: use more overlapping frames, ensure consistent lighting.")
-
-    # Stage 5: Undistort (optional)
-    if not skip_undistort:
-        undistort(workspace)
 
     sparse_dir = os.path.join(workspace, "sparse", "0")
     return {
@@ -190,10 +176,10 @@ def run_colmap(workspace: str, skip_undistort: bool = False) -> dict:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Run COLMAP reconstruction")
-    parser.add_argument("--workspace", required=True, help="COLMAP workspace with images/ subdirectory")
-    parser.add_argument("--skip-undistort", action="store_true")
+    parser.add_argument("--workspace", required=True,
+                        help="COLMAP workspace with images/ subdirectory")
     args = parser.parse_args()
-    summary = run_colmap(args.workspace, skip_undistort=args.skip_undistort)
+    summary = run_colmap(args.workspace)
     print(f"\n  Result: {summary}")
 
 

@@ -97,14 +97,19 @@ def prepare_frames(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 def main():
+    default_frames = "/workspace/SpatialBuild/vision_pipeline/data/frames/"
+    default_ws = "/workspace/SpatialBuild/reconstruction_pipeline/colmap_workspace/"
+
     parser = argparse.ArgumentParser(description="Prepare frames for COLMAP")
-    parser.add_argument("--frames-dir", required=True, help="Directory with extracted video frames")
-    parser.add_argument("--workspace", default=None, help="COLMAP workspace directory (default: ./colmap_workspace)")
-    parser.add_argument("--max-frames", type=int, default=300, help="Max frames to keep (default: 300)")
+    parser.add_argument("--frames-dir", default=default_frames,
+                        help=f"Directory with extracted video frames (default: {default_frames})")
+    parser.add_argument("--workspace", default=default_ws,
+                        help=f"COLMAP workspace directory (default: {default_ws})")
+    parser.add_argument("--max-frames", type=int, default=300,
+                        help="Max frames to keep (default: 300)")
     args = parser.parse_args()
 
-    workspace = args.workspace or os.path.join(os.path.dirname(__file__), "colmap_workspace")
-    summary = prepare_frames(args.frames_dir, workspace, target_max=args.max_frames)
+    summary = prepare_frames(args.frames_dir, args.workspace, target_max=args.max_frames)
     print(f"\n  Summary: {summary}")
 
 
