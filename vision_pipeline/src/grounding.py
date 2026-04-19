@@ -95,6 +95,66 @@ class ObjectGrounder:
 
         return detections
 
+    def ground_centered(
+        self,
+        image: np.ndarray,
+        text_prompt: str,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.25,
+    ) -> dict | None:
+        """Pick the detection whose centre is closest to the image centre.
+
+        Ray-Ban Meta cameras point where the user is looking, so the
+        intended target is almost always near the frame centre.  This
+        method uses a low ``box_threshold`` (default 0.15) to gather many
+        candidates, then ranks them by a weighted combination of detection
+        confidence and centre proximity.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            RGB image (H, W, 3), dtype uint8.
+        text_prompt : str
+            What to detect, e.g. ``"wall"`` or ``"bed"``.
+        box_threshold : float
+            Minimum confidence for bounding-box proposals (kept low to
+            maximise candidates).
+        text_threshold : float
+            Minimum confidence for text–box association.
+
+        Returns
+        -------
+        dict | None
+            The best detection (with extra key ``"combined_score"``), or
+            *None* if nothing was detected.
+        """
+        detections = self.ground(
+            image, text_prompt,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        if not detections:
+            return None
+
+        h, w = image.shape[:2]
+        cx_img, cy_img = w / 2.0, h / 2.0
+        max_dist = np.sqrt(cx_img ** 2 + cy_img ** 2)
+
+        best, best_combined = None, -1.0
+        for d in detections:
+            x1, y1, x2, y2 = d["bbox"]
+            cx_box = (x1 + x2) / 2.0
+            cy_box = (y1 + y2) / 2.0
+            dist = np.sqrt((cx_box - cx_img) ** 2 + (cy_box - cy_img) ** 2)
+            proximity = 1.0 - (dist / max_dist) if max_dist > 0 else 1.0
+            combined = d["score"] * 0.4 + proximity * 0.6
+            if combined > best_combined:
+                best_combined = combined
+                best = d
+
+        best["combined_score"] = round(best_combined, 4)
+        return best
+
 
 if __name__ == "__main__":
     import cv2
@@ -107,18 +167,20 @@ if __name__ == "__main__":
 
     bgr = cv2.imread(frame_paths[0])
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
     grounder = ObjectGrounder()
-    detections = grounder.ground(rgb, "wall")
 
+    # ── ground() — all detections ───────────────────────────────────────
+    detections = grounder.ground(rgb, "wall")
     print(f"Image: {frame_paths[0]}")
-    print(f"Detections ({len(detections)}):")
+    print(f"\n=== ground() — {len(detections)} detections ===")
+
+    vis_all = bgr.copy()
     for d in detections:
         print(f"  {d['label']:>12s}  score={d['score']:.4f}  bbox={d['bbox']}")
         x1, y1, x2, y2 = [int(v) for v in d["bbox"]]
-        cv2.rectangle(bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(vis_all, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(
-            bgr,
+            vis_all,
             f"{d['label']} {d['score']:.2f}",
             (x1, max(y1 - 8, 0)),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -127,7 +189,35 @@ if __name__ == "__main__":
             2,
         )
 
+    # ── ground_centered() — single best pick ────────────────────────────
+    centered = grounder.ground_centered(rgb, "wall")
+    print(f"\n=== ground_centered() ===")
+
+    vis_centered = bgr.copy()
+    if centered:
+        print(
+            f"  {centered['label']:>12s}  score={centered['score']:.4f}  "
+            f"combined={centered['combined_score']:.4f}  bbox={centered['bbox']}"
+        )
+        x1, y1, x2, y2 = [int(v) for v in centered["bbox"]]
+        cv2.rectangle(vis_centered, (x1, y1), (x2, y2), (0, 0, 255), 3)
+        cv2.putText(
+            vis_centered,
+            f"{centered['label']} comb={centered['combined_score']:.2f}",
+            (x1, max(y1 - 8, 0)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
+            2,
+        )
+    else:
+        print("  No detections")
+
+    # ── Save both ───────────────────────────────────────────────────────
     config.TEST_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = str(config.TEST_OUTPUTS_DIR / "grounding_test.jpg")
-    cv2.imwrite(out_path, bgr)
-    print(f"Saved annotated image to {out_path}")
+    out_all = str(config.TEST_OUTPUTS_DIR / "grounding_test.jpg")
+    out_ctr = str(config.TEST_OUTPUTS_DIR / "grounding_centered_test.jpg")
+    cv2.imwrite(out_all, vis_all)
+    cv2.imwrite(out_ctr, vis_centered)
+    print(f"\nSaved all-detections  → {out_all}")
+    print(f"Saved center-picked   → {out_ctr}")

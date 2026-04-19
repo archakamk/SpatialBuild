@@ -94,15 +94,17 @@ class EditRouter:
         anchor_bgr = cv2.imread(str(anchor_path))
         anchor_rgb = cv2.cvtColor(anchor_bgr, cv2.COLOR_BGR2RGB)
 
-        # ── 2. Detect ───────────────────────────────────────────────────
-        detections = self.grounder.ground(anchor_rgb, target)
-        if not detections:
+        # ── 2. Detect (centre-biased for Ray-Ban Meta gaze prior) ────────
+        best = self.grounder.ground_centered(anchor_rgb, target)
+        if best is None:
             print(f"  [warn] No detections for '{target}' — skipping command")
             return {}
 
-        best = max(detections, key=lambda d: d["score"])
         bbox = [int(v) for v in best["bbox"]]
-        print(f"  Detected '{best['label']}' score={best['score']:.3f} bbox={bbox}")
+        print(
+            f"  Detected '{best['label']}' score={best['score']:.3f} "
+            f"combined={best.get('combined_score', 0):.3f} bbox={bbox}"
+        )
 
         # ── 3. Segment anchor frame ─────────────────────────────────────
         anchor_mask = self.segmenter.segment_frame(anchor_rgb, bbox)
