@@ -315,7 +315,7 @@ SAM 2 mask → 15px dilation (catches shadows and edge artifacts) → LaMa inpai
 
 ## Team
 
-Built at Realities Hack 2026.
+Built at StarkHacks 2026.
 
 ---
 
