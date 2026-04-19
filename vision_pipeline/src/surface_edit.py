@@ -12,7 +12,8 @@ import numpy as np
 
 from . import config
 
-FEATHER_RADIUS = 5  # pixels of gaussian blur on mask edges
+FEATHER_RADIUS = 7  # pixels of gaussian blur on mask edges
+RECOLOR_BLEND = 0.5  # how much of the target color to mix in (0 = none, 1 = full)
 
 
 def _feather_mask(mask: np.ndarray) -> np.ndarray:
@@ -35,6 +36,12 @@ class SurfaceEditor:
     ) -> np.ndarray:
         """Recolor the masked region while preserving luminance detail.
 
+        Works well even on near-white or very light surfaces where a
+        pure HSV hue/saturation swap would produce almost no visible
+        change.  Instead we blend a solid colour fill at controlled
+        strength, then re-inject the original lighting (V channel) so
+        shadow gradients and surface texture are preserved.
+
         Parameters
         ----------
         image : np.ndarray
@@ -49,26 +56,35 @@ class SurfaceEditor:
         np.ndarray
             Edited RGB image (H, W, 3), uint8.
         """
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV).astype(np.float32)
+        h, w = image.shape[:2]
+        img_f = image.astype(np.float32)
 
-        # Target hue / saturation from the desired colour
-        target_patch = np.uint8([[target_color]])
-        target_hsv = cv2.cvtColor(target_patch, cv2.COLOR_RGB2HSV)[0, 0].astype(np.float32)
+        # Solid fill of the target colour at full image size
+        colored = np.full_like(img_f, target_color, dtype=np.float32)
 
-        recolored_hsv = hsv.copy()
-        recolored_hsv[:, :, 0] = target_hsv[0]  # hue
-        recolored_hsv[:, :, 1] = target_hsv[1]  # saturation
-        # V channel kept from original → preserves shadows, highlights, texture
-
-        recolored_hsv = np.clip(recolored_hsv, 0, 255).astype(np.uint8)
-        recolored_rgb = cv2.cvtColor(recolored_hsv, cv2.COLOR_HSV2RGB)
-
+        # Feathered alpha from the mask
         alpha = _feather_mask(mask)[:, :, np.newaxis]  # (H, W, 1)
-        blended = (
-            image.astype(np.float32) * (1.0 - alpha)
-            + recolored_rgb.astype(np.float32) * alpha
-        )
-        return np.clip(blended, 0, 255).astype(np.uint8)
+        effective = alpha * RECOLOR_BLEND  # blend strength inside the mask
+
+        # Blend: keep some original texture, push towards target colour
+        blended = img_f * (1.0 - effective) + colored * effective
+
+        # Preserve original lighting: mix V channels so shadows stay
+        orig_hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV).astype(np.float32)
+        orig_v = orig_hsv[:, :, 2]
+
+        blended_u8 = np.clip(blended, 0, 255).astype(np.uint8)
+        result_hsv = cv2.cvtColor(blended_u8, cv2.COLOR_RGB2HSV).astype(np.float32)
+        result_v = result_hsv[:, :, 2]
+
+        result_hsv[:, :, 2] = np.clip(result_v * 0.3 + orig_v * 0.7, 0, 255)
+        final = cv2.cvtColor(result_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+        # Outside the mask, keep the original image untouched
+        mask_3ch = np.broadcast_to(alpha > 0, final.shape)
+        out = image.copy()
+        out[mask_3ch] = final[mask_3ch]
+        return out
 
     # ── retexture ───────────────────────────────────────────────────────
 

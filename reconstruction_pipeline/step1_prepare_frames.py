@@ -97,7 +97,7 @@ def prepare_frames(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 def main():
-    default_frames = "/workspace/SpatialBuild/vision_pipeline/data/frames/"
+    default_frames = "/workspace/SpatialBuild/vision_pipeline/data/edited_frames/"
     default_ws = "/workspace/SpatialBuild/reconstruction_pipeline/colmap_workspace/"
 
     parser = argparse.ArgumentParser(description="Prepare frames for COLMAP")

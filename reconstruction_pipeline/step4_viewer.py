@@ -5,9 +5,13 @@ files and optionally serve it over HTTP.
 
 Reads viewer_template.html, injects the splat file reference and any furniture
 mesh URLs, and writes a ready-to-open viewer.html.
+
+For Jupyter environments: use display_in_notebook() to render inline, or
+serve_background() + Jupyter's proxy URL to access from your local browser.
 """
 
 import argparse
+import base64
 import http.server
 import os
 import shutil
@@ -88,11 +92,22 @@ def generate_viewer(
     return viewer_path
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Serving — works for both local and Jupyter/remote environments
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_jupyter_base_url() -> str | None:
+    """Try to detect the Jupyter server base URL for proxy access."""
+    # Check common env vars set by Jupyter Hub / cloud notebook platforms
+    for var in ("JUPYTERHUB_SERVICE_PREFIX", "JUPYTER_BASE_URL", "NB_PREFIX"):
+        val = os.environ.get(var)
+        if val:
+            return val.rstrip("/")
+    return None
+
+
 def serve(directory: str, port: int = 8080):
-    """
-    Copy splat.ply and viewer.html into a serve directory (if not already there)
-    and start a local HTTP server on the given port.
-    """
+    """Start a local HTTP server.  Prints proxy URL hints for Jupyter."""
     os.chdir(directory)
 
     handler = http.server.SimpleHTTPRequestHandler
@@ -104,17 +119,33 @@ def serve(directory: str, port: int = 8080):
             self.send_header("Cache-Control", "no-cache")
             super().end_headers()
         def log_message(self, fmt, *a):
-            # Quieter logging — only show errors
             if int(a[1]) >= 400:
                 super().log_message(fmt, *a)
 
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("0.0.0.0", port), CORSHandler) as httpd:
-        url = f"http://localhost:{port}/viewer.html"
-        print(f"\n  ┌─────────────────────────────────────────┐")
-        print(f"  │  Open in browser: {url:<22s}│")
-        print(f"  │  Press Ctrl+C to stop                    │")
-        print(f"  └─────────────────────────────────────────┘\n")
+        local_url = f"http://localhost:{port}/viewer.html"
+
+        print(f"\n  ┌───────────────────────────────────────────────────────┐")
+        print(f"  │  Server running on port {port:<30d}│")
+        print(f"  │                                                       │")
+        print(f"  │  Local:   {local_url:<45s}│")
+
+        # Jupyter proxy hint
+        jupyter_base = _get_jupyter_base_url()
+        if jupyter_base:
+            proxy_url = f"{jupyter_base}/proxy/{port}/viewer.html"
+            print(f"  │  Jupyter: {proxy_url:<45s}│")
+        else:
+            print(f"  │                                                       │")
+            print(f"  │  Jupyter notebook? Access via one of:                 │")
+            print(f"  │    <your-server-url>/proxy/{port}/viewer.html          │")
+            print(f"  │    or install jupyter-server-proxy                    │")
+
+        print(f"  │                                                       │")
+        print(f"  │  Press Ctrl+C to stop                                 │")
+        print(f"  └───────────────────────────────────────────────────────┘\n")
+
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -122,10 +153,35 @@ def serve(directory: str, port: int = 8080):
 
 
 def serve_background(directory: str, port: int = 8080) -> threading.Thread:
-    """Start the HTTP server in a background thread (non-blocking)."""
+    """Start the HTTP server in a background daemon thread (non-blocking)."""
     t = threading.Thread(target=serve, args=(directory, port), daemon=True)
     t.start()
     return t
+
+
+def display_in_notebook(viewer_html_path: str, width: int = 960, height: int = 640):
+    """
+    Display the viewer inline in a Jupyter notebook using an iframe.
+    Starts a background server and points the iframe at it.
+    """
+    from IPython.display import HTML, display
+
+    directory = os.path.dirname(os.path.abspath(viewer_html_path))
+    port = 8080
+
+    # Start server in background
+    serve_background(directory, port)
+
+    jupyter_base = _get_jupyter_base_url()
+    if jupyter_base:
+        src = f"{jupyter_base}/proxy/{port}/viewer.html"
+    else:
+        src = f"/proxy/{port}/viewer.html"
+
+    iframe = f'<iframe src="{src}" width="{width}" height="{height}" style="border:1px solid #333; border-radius:8px;"></iframe>'
+    display(HTML(iframe))
+    print(f"  Server running on port {port}")
+    print(f"  If the iframe is blank, open this URL in a new tab: {src}")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

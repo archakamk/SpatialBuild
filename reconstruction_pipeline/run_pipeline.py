@@ -9,7 +9,7 @@ Default invocation (uses test frames, no args needed):
 
 Full invocation:
     python run_pipeline.py \\
-        --frames /workspace/SpatialBuild/vision_pipeline/data/frames/ \\
+        --frames /workspace/SpatialBuild/vision_pipeline/data/edited_frames/ \\
         --output /workspace/SpatialBuild/reconstruction_pipeline/output/ \\
         --iterations 2000 \\
         --serve
@@ -24,6 +24,9 @@ import sys
 import time
 from pathlib import Path
 
+# Headless container: force Qt offscreen so COLMAP GPU mode works without X11
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 # Make sibling modules importable when run as a script
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -35,7 +38,7 @@ from step4_viewer import generate_viewer, serve, serve_background
 from step5_add_furniture import process_add_commands
 
 # ── Hardcoded project paths ──────────────────────────────────────────────────
-DEFAULT_FRAMES  = "/workspace/SpatialBuild/vision_pipeline/data/frames/"
+DEFAULT_FRAMES  = "/workspace/SpatialBuild/vision_pipeline/data/edited_frames/"
 DEFAULT_OUTPUT  = "/workspace/SpatialBuild/reconstruction_pipeline/output/"
 DEFAULT_COLMAP_WS = "/workspace/SpatialBuild/reconstruction_pipeline/colmap_workspace/"
 DEFAULT_COMMANDS = "/workspace/SpatialBuild/audio_pipeline/outputs/commands.json"

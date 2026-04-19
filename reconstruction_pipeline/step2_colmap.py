@@ -13,12 +13,21 @@ import sys
 import time
 
 
+def _colmap_env() -> dict[str, str]:
+    """Return env with QT_QPA_PLATFORM=offscreen so COLMAP GPU works headless."""
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    return env
+
+
 def _run(cmd: list[str], label: str, timeout: int = 1800) -> subprocess.CompletedProcess:
     """Run a subprocess with full logging on failure."""
     print(f"    ▸ {label}")
     print(f"      $ {' '.join(cmd)}")
     t0 = time.time()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, env=_colmap_env(),
+    )
     elapsed = time.time() - t0
 
     if result.returncode != 0:
@@ -36,7 +45,9 @@ def _run(cmd: list[str], label: str, timeout: int = 1800) -> subprocess.Complete
     return result
 
 
-def feature_extraction(workspace: str, use_gpu: bool = True) -> bool:
+def feature_extraction(workspace: str) -> bool:
+    # COLMAP GPU SIFT requires OpenGL — unavailable in headless containers.
+    # CPU SIFT is fast enough (~30s for 300 frames) and works everywhere.
     db = os.path.join(workspace, "database.db")
     images = os.path.join(workspace, "images")
     cmd = [
@@ -45,29 +56,26 @@ def feature_extraction(workspace: str, use_gpu: bool = True) -> bool:
         "--image_path", images,
         "--ImageReader.camera_model", "OPENCV",
         "--ImageReader.single_camera", "1",
-        "--SiftExtraction.use_gpu", "1" if use_gpu else "0",
+        "--SiftExtraction.use_gpu", "0",
         "--SiftExtraction.max_num_features", "8192",
     ]
-    result = _run(cmd, "Feature extraction" + (" (GPU)" if use_gpu else " (CPU)"))
-    if result.returncode != 0 and use_gpu:
-        print("    ↻ GPU SIFT failed — retrying with CPU …")
-        return feature_extraction(workspace, use_gpu=False)
+    result = _run(cmd, "Feature extraction (CPU)")
     return result.returncode == 0
 
 
-def sequential_matching(workspace: str, use_gpu: bool = True) -> bool:
+def sequential_matching(workspace: str) -> bool:
     db = os.path.join(workspace, "database.db")
+    # GPU matching also needs OpenGL — use CPU.
+    # Loop detection disabled — requires a vocab tree file that most installs
+    # don't ship.  Sequential overlap of 10 is sufficient for video frames.
     cmd = [
         "colmap", "sequential_matcher",
         "--database_path", db,
-        "--SiftMatching.use_gpu", "1" if use_gpu else "0",
+        "--SiftMatching.use_gpu", "0",
         "--SequentialMatching.overlap", "10",
-        "--SequentialMatching.loop_detection", "1",
+        "--SequentialMatching.loop_detection", "0",
     ]
-    result = _run(cmd, "Sequential matching" + (" (GPU)" if use_gpu else " (CPU)"))
-    if result.returncode != 0 and use_gpu:
-        print("    ↻ GPU matching failed — retrying with CPU …")
-        return sequential_matching(workspace, use_gpu=False)
+    result = _run(cmd, "Sequential matching (CPU)")
     return result.returncode == 0
 
 
