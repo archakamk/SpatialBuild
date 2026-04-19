@@ -99,14 +99,14 @@ class ObjectGrounder:
         self,
         image: np.ndarray,
         text_prompt: str,
-        box_threshold: float = 0.15,
+        box_threshold: float = 0.25,
         text_threshold: float = 0.25,
     ) -> dict | None:
         """Pick the detection whose centre is closest to the image centre.
 
         Ray-Ban Meta cameras point where the user is looking, so the
         intended target is almost always near the frame centre.  This
-        method uses a low ``box_threshold`` (default 0.15) to gather many
+        method uses a moderate ``box_threshold`` (default 0.25) to gather
         candidates, then ranks them by a weighted combination of detection
         confidence and centre proximity.
 
@@ -147,7 +147,17 @@ class ObjectGrounder:
             cy_box = (y1 + y2) / 2.0
             dist = np.sqrt((cx_box - cx_img) ** 2 + (cy_box - cy_img) ** 2)
             proximity = 1.0 - (dist / max_dist) if max_dist > 0 else 1.0
-            combined = d["score"] * 0.4 + proximity * 0.6
+
+            bbox_area = (x2 - x1) * (y2 - y1)
+            area_ratio = bbox_area / (h * w) if (h * w) > 0 else 0.0
+            if area_ratio > 0.7:
+                size_penalty = 0.1
+            elif area_ratio > 0.5:
+                size_penalty = 0.5
+            else:
+                size_penalty = 1.0
+
+            combined = (d["score"] * 0.4 + proximity * 0.6) * size_penalty
             if combined > best_combined:
                 best_combined = combined
                 best = d
