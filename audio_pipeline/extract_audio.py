@@ -1,4 +1,4 @@
-"""MOV -> MP4 -> MP3 -> transcript (.txt + word-level .words.json) -> LLM edit commands (.commands.json).
+"""MOV -> MP4 -> MP3 -> transcript (.txt + word-level .words.json) -> edit commands (.commands.json).
 
 Pipeline stages:
   1. Find the first .MOV in the script folder or its parent.
@@ -8,19 +8,21 @@ Pipeline stages:
        - <stem>.txt           : plain text transcript
        - <stem>.words.json    : word-level timestamps, e.g.
          [{"word": "paint", "start": 14.1, "end": 14.3}, ...]
-  5. Use Qwen/Qwen2.5-3B-Instruct to convert the word-level transcript
+  5. Use Gemini API (gemini-2.5-flash) to convert the word-level transcript
      into edit commands:
        - <stem>.commands.json : list of {timestamp, action, target, params}
-       - <stem>.llm_raw.txt   : raw LLM reply (for debugging)
+       - <stem>.llm_raw.txt   : raw Gemini reply (for debugging)
 
 All outputs are written to ./outputs/ next to this script.
 
 Dependencies:
-    pip install imageio-ffmpeg "transformers>=4.42" accelerate torch librosa soundfile
+    pip install imageio-ffmpeg "transformers>=4.42" accelerate torch librosa soundfile google-genai
+
+Environment:
+    export GEMINI_API_KEY="..."
 
 First run downloads:
     openai/whisper-tiny         (~150 MB)
-    Qwen/Qwen2.5-3B-Instruct    (~6 GB)
 Models are cached under ~/.cache/huggingface/hub.
 """
 
@@ -29,7 +31,6 @@ from __future__ import annotations
 import gc
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -73,51 +74,6 @@ def _expose_ffmpeg_as_standard_name() -> None:
 
 _expose_ffmpeg_as_standard_name()
 WHISPER_MODEL_ID = "openai/whisper-tiny"
-LLM_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-
-LLM_INSTRUCTION = """You convert a spoken walkthrough of a 3D room into a list of concrete scene-edit commands.
-
-You will be given the transcript as a JSON array of words with timestamps (seconds):
-[{"word": "...", "start": <float>, "end": <float>}, ...]
-
-Your job:
-- Identify every explicit edit the speaker wants performed on the scene.
-- An "edit" is an instruction to change, add, or remove something in the room.
-  Examples of edits: "paint this wall red", "replace the carpet with wood",
-  "add a lamp in the corner", "remove the sofa".
-- IGNORE everything that is not an edit command, including:
-    * descriptions or opinions  ("this is a beautiful room", "looks great",
-      "otherwise pretty good")
-    * filler / stall words       ("so", "um", "okay", "you know")
-    * greetings, narration, commentary about the walkthrough itself
-- Deduplicate: if the same edit is said twice (e.g. the speaker repeats
-  "paint this wall red"), emit it only once.
-
-Output format (strict):
-Return ONLY a JSON array. No prose, no markdown, no code fences.
-Each element MUST be an object with exactly these keys:
-  - "timestamp": number  -> the `end` time (seconds) of the LAST word of the
-                            command, so we have the full intent.
-  - "action":    string  -> one of: "recolor", "replace", "add", "remove".
-  - "target":    string  -> the object being edited, as spoken (e.g. "wall",
-                            "carpet", "sofa in the corner").
-  - "params":    object  -> action-specific details. Examples:
-        recolor -> {"color": "red"}
-        replace -> {"with": "wood"} or {"with": "wood floor", "material": "wood"}
-        add     -> {"item": "lamp", "location": "corner"}
-        remove  -> {}
-
-Example:
-Input words (abbreviated):
-[{"word":"paint","start":14.1,"end":14.3},
- {"word":"this","start":14.3,"end":14.5},
- {"word":"wall","start":14.5,"end":14.8},
- {"word":"red","start":14.9,"end":15.2}]
-Expected output:
-[{"timestamp": 15.2, "action": "recolor", "target": "wall", "params": {"color": "red"}}]
-
-If there are no edit commands in the transcript, return [].
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +82,6 @@ If there are no edit commands in the transcript, return [].
 #helper
 
 def find_mov_file(search_dirs: list[Path]) -> Path:
-    x = []
     for folder in search_dirs:
         if not folder.is_dir():
             continue
@@ -282,97 +237,19 @@ def transcribe_with_whisper(
 
 
 # ---------------------------------------------------------------------------
-# LLM command-extraction step
+# Gemini command-extraction step
 # ---------------------------------------------------------------------------
 
-def _parse_json_array(text: str):
-    """Best-effort JSON array extraction from free-form LLM output."""
-    cleaned = re.sub(r"```(?:json)?", "", text).replace("```", "").strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\[\s*(?:\{.*?\}\s*,?\s*)+\]", cleaned, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
-    raise ValueError("Could not parse JSON array from model output.")
-
-
-def extract_commands_with_llm(
+def extract_commands_with_gemini(
     words: list[dict],
     commands_path: Path,
     raw_path: Path,
 ) -> None:
-    print(f"[4/4] Extracting edit commands with {LLM_MODEL_ID} -> {commands_path.name}")
-    try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-    except ImportError as e:
-        sys.stderr.write(
-            f"Missing dependency: {e.name}\n"
-            "Install with:\n"
-            '    pip install "transformers>=4.42" accelerate torch\n'
-        )
-        sys.exit(1)
+    """Extract edit commands from words using Gemini API."""
+    from extract_commands_gemini import extract_commands_gemini
 
-    device, torch_dtype = pick_device_dtype()
-    print(f"       Loading {LLM_MODEL_ID} on {device} ({torch_dtype})...")
-
-    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(
-        LLM_MODEL_ID,
-        torch_dtype=torch_dtype,
-        low_cpu_mem_usage=True,
-    )
-    model.to(device)
-    model.eval()
-
-    user_content = (
-        f"{LLM_INSTRUCTION}\n\n"
-        "Input: word-level transcript with timestamps (seconds):\n"
-        f"{json.dumps(words, ensure_ascii=False)}"
-    )
-    messages = [{"role": "user", "content": user_content}]
-
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        return_tensors="pt",
-        add_generation_prompt=True,
-        return_dict=True,
-    ).to(model.device)
-
-    input_len = inputs["input_ids"].shape[-1]
-
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1024,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    reply = tokenizer.decode(
-        output_ids[0][input_len:],
-        skip_special_tokens=True,
-    ).strip()
-
-    raw_path.write_text(reply + "\n", encoding="utf-8")
-
-    try:
-        commands = _parse_json_array(reply)
-    except (ValueError, json.JSONDecodeError) as e:
-        sys.stderr.write(
-            f"Warning: failed to parse JSON from LLM output ({e}).\n"
-            f"Raw reply saved to {raw_path}.\n"
-        )
-        commands = []
-
-    commands_path.write_text(
-        json.dumps(commands, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    del model, tokenizer
-    free_torch_memory()
+    print(f"[4/4] Extracting edit commands with Gemini -> {commands_path.name}")
+    extract_commands_gemini(words, commands_path, raw_path)
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +286,7 @@ def main() -> int:
     else:
         words = transcribe_with_whisper(audio_path, txt_path, words_json_path)
 
-    extract_commands_with_llm(words, commands_path, llm_raw_path)
+    extract_commands_with_gemini(words, commands_path, llm_raw_path)
 
     print("\nDone.")
     print(f"  MP4:        {mp4_path}")

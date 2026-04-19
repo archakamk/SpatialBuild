@@ -25,6 +25,8 @@ def run(
     commands_path: str | Path,
     output_dir: str | Path,
     dry_run: bool = False,
+    voice: bool = False,
+    report: bool = False,
 ) -> None:
     """Execute the full room-editing pipeline.
 
@@ -38,6 +40,10 @@ def run(
         Directory to write edited frames into.
     dry_run : bool
         If *True*, print the plan without loading models or editing.
+    voice : bool
+        If *True*, generate ElevenLabs voice confirmations after each edit.
+    report : bool
+        If *True*, generate a Gemini-powered documentation report at the end.
     """
     frames_dir = Path(frames_dir)
     output_dir = Path(output_dir)
@@ -75,12 +81,21 @@ def run(
     # ── Initialise router (loads all models once) ───────────────────────
     from .edit_router import EditRouter
 
+    pipeline_start = time.time()
     t0 = time.time()
     router = EditRouter()
     print(f"Models loaded in {time.time() - t0:.1f}s\n")
 
+    # ── Optional voice feedback ─────────────────────────────────────────
+    voice_fb = None
+    if voice:
+        from .voice_feedback import VoiceFeedback
+
+        voice_fb = VoiceFeedback()
+
     # ── Execute each command ────────────────────────────────────────────
     frames_edited: set[int] = set()
+    audio_paths: list[str] = []
 
     for i, cmd in enumerate(commands, 1):
         print(
@@ -100,8 +115,14 @@ def run(
 
         print(
             f"  → {len(edited_frames)} frames edited  "
-            f"({time.time() - t1:.1f}s)\n"
+            f"({time.time() - t1:.1f}s)"
         )
+
+        if voice_fb is not None:
+            ap = voice_fb.generate_confirmation(cmd, idx=i)
+            audio_paths.append(ap)
+
+        print()
 
     # ── Reassemble video ────────────────────────────────────────────────
     output_video = str(config.DATA_DIR / "output" / "output.mp4")
@@ -115,6 +136,38 @@ def run(
         print(f"Video write {'succeeded' if success else 'FAILED'}: {output_video}")
     print()
 
+    # ── Voice summary ───────────────────────────────────────────────────
+    if voice_fb is not None:
+        summary_path = voice_fb.generate_summary(commands)
+        audio_paths.append(summary_path)
+
+    # ── Report generation ───────────────────────────────────────────────
+    pipeline_elapsed = time.time() - pipeline_start
+    if report:
+        from .generate_report import PipelineReporter
+
+        models_used = ["Grounding DINO", "SAM 2.1"]
+        actions = {c["action"] for c in commands}
+        if "remove" in actions:
+            models_used.append("LaMa")
+        if voice:
+            models_used.append("ElevenLabs")
+
+        pipeline_stats = {
+            "total_frames": total_frames,
+            "frames_edited": len(frames_edited),
+            "processing_time_seconds": round(pipeline_elapsed, 1),
+            "models_used": models_used,
+            "input_video": str(frames_dir),
+            "output_video": output_video,
+        }
+
+        try:
+            reporter = PipelineReporter()
+            reporter.generate_markdown_report(commands, pipeline_stats)
+        except Exception as exc:
+            print(f"  [report] Failed to generate report: {exc}")
+
     # ── Summary ─────────────────────────────────────────────────────────
     print("=" * 60)
     print(
@@ -123,6 +176,10 @@ def run(
     )
     print(f"Edited frames : {output_dir}")
     print(f"Output video  : {output_video}")
+    if audio_paths:
+        print(f"Voice files   :")
+        for ap in audio_paths:
+            print(f"  {ap}")
     print("=" * 60)
 
 
@@ -150,6 +207,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Print the edit plan without loading models or editing",
     )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Generate ElevenLabs voice confirmations (requires ELEVENLABS_API_KEY)",
+    )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Generate a documentation report via Gemini (requires GEMINI_API_KEY)",
+    )
     args = parser.parse_args()
 
-    run(args.frames, args.commands, args.output, dry_run=args.dry_run)
+    run(
+        args.frames, args.commands, args.output,
+        dry_run=args.dry_run, voice=args.voice, report=args.report,
+    )

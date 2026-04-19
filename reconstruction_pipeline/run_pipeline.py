@@ -41,8 +41,7 @@ from step5_add_furniture import process_add_commands
 DEFAULT_FRAMES  = "/workspace/SpatialBuild/vision_pipeline/data/edited_frames/"
 DEFAULT_OUTPUT  = "/workspace/SpatialBuild/reconstruction_pipeline/output/"
 DEFAULT_COLMAP_WS = "/workspace/SpatialBuild/reconstruction_pipeline/colmap_workspace/"
-DEFAULT_COMMANDS = "/workspace/SpatialBuild/audio_pipeline/outputs/commands.json"
-
+DEFAULT_COMMANDS = "/workspace/SpatialBuild/audio_pipeline/outputs/video-82_singular_display.commands.json"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Helpers

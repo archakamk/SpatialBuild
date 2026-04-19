@@ -152,6 +152,115 @@ class SurfaceEditor:
         )
         return np.clip(blended, 0, 255).astype(np.uint8)
 
+    # ── place_image ──────────────────────────────────────────────────────
+
+    def place_image(
+        self,
+        image: np.ndarray,
+        mask: np.ndarray,
+        overlay_path: str | Path,
+        scale: float = 0.4,
+    ) -> np.ndarray:
+        """Place an image (e.g. a painting) onto a masked surface region.
+
+        The overlay is aspect-ratio-scaled, centred within the mask's
+        bounding rect, clipped to the mask, brightness-matched, and
+        alpha-blended with feathered edges.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            RGB image (H, W, 3), uint8.
+        mask : np.ndarray
+            Binary mask (H, W), uint8 0/255.
+        overlay_path : str | Path
+            Path to the overlay image (resolved against
+            :pydata:`config.DATA_DIR` if not absolute).
+        scale : float
+            Fraction of ``min(mask_width, mask_height)`` to use as the
+            overlay's largest dimension.
+
+        Returns
+        -------
+        np.ndarray
+            Composited RGB image (H, W, 3), uint8.
+        """
+        ov_path = Path(overlay_path)
+        if not ov_path.is_absolute():
+            ov_path = config.DATA_DIR / ov_path
+
+        ov_bgr = cv2.imread(str(ov_path), cv2.IMREAD_UNCHANGED)
+        if ov_bgr is None:
+            raise FileNotFoundError(f"Cannot load overlay: {ov_path}")
+
+        # Handle BGRA (with alpha channel) or plain BGR
+        if ov_bgr.shape[2] == 4:
+            ov_rgb = cv2.cvtColor(ov_bgr, cv2.COLOR_BGRA2RGBA)
+            ov_alpha = ov_rgb[:, :, 3].astype(np.float32) / 255.0
+            ov_rgb = ov_rgb[:, :, :3]
+        else:
+            ov_rgb = cv2.cvtColor(ov_bgr, cv2.COLOR_BGR2RGB)
+            ov_alpha = np.ones(ov_rgb.shape[:2], dtype=np.float32)
+
+        # Bounding rect of the mask
+        coords = cv2.findNonZero(mask)
+        if coords is None:
+            return image.copy()
+        bx, by, bw, bh = cv2.boundingRect(coords)
+
+        # Scale overlay to fit, preserving aspect ratio
+        target_dim = int(scale * min(bw, bh))
+        if target_dim < 1:
+            return image.copy()
+
+        oh, ow = ov_rgb.shape[:2]
+        ratio = target_dim / max(oh, ow)
+        new_w, new_h = max(1, int(ow * ratio)), max(1, int(oh * ratio))
+        ov_rgb = cv2.resize(ov_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        ov_alpha = cv2.resize(ov_alpha, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        # Centre within the bounding rect
+        cx = bx + bw // 2 - new_w // 2
+        cy = by + bh // 2 - new_h // 2
+
+        # Clip to image bounds
+        img_h, img_w = image.shape[:2]
+        sx = max(0, -cx)
+        sy = max(0, -cy)
+        ex = min(new_w, img_w - cx)
+        ey = min(new_h, img_h - cy)
+        if sx >= ex or sy >= ey:
+            return image.copy()
+
+        dst_y1, dst_y2 = cy + sy, cy + ey
+        dst_x1, dst_x2 = cx + sx, cx + ex
+        ov_crop = ov_rgb[sy:ey, sx:ex].astype(np.float32)
+        al_crop = ov_alpha[sy:ey, sx:ex]
+
+        # Only place where the wall mask is active
+        wall_mask_region = mask[dst_y1:dst_y2, dst_x1:dst_x2].astype(np.float32) / 255.0
+        effective_alpha = al_crop * wall_mask_region
+
+        # Feather edges of the placement
+        ksize = 5
+        effective_alpha = cv2.GaussianBlur(effective_alpha, (ksize, ksize), 0)
+        effective_alpha = effective_alpha[:, :, np.newaxis]
+
+        # Brightness matching: shift overlay V toward original V
+        orig_region = image[dst_y1:dst_y2, dst_x1:dst_x2]
+        orig_v = cv2.cvtColor(orig_region, cv2.COLOR_RGB2HSV)[:, :, 2].astype(np.float32)
+        ov_hsv = cv2.cvtColor(ov_crop.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+        ov_hsv[:, :, 2] = np.clip(ov_hsv[:, :, 2] * 0.7 + orig_v * 0.3, 0, 255)
+        ov_matched = cv2.cvtColor(ov_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+
+        # Alpha-blend
+        dst_region = orig_region.astype(np.float32)
+        blended = dst_region * (1.0 - effective_alpha) + ov_matched * effective_alpha
+
+        out = image.copy()
+        out[dst_y1:dst_y2, dst_x1:dst_x2] = np.clip(blended, 0, 255).astype(np.uint8)
+        return out
+
     # ── helpers ─────────────────────────────────────────────────────────
 
     @staticmethod

@@ -3,21 +3,20 @@
 step2_colmap.py — Run COLMAP sparse reconstruction on prepared frames.
 
 Stages: feature extraction → sequential matching → sparse mapping.
-Automatically falls back from GPU to CPU SIFT if GPU fails (common on AMD).
+Uses xvfb-run to provide a virtual display for COLMAP GPU SIFT (OpenGL).
+Falls back to CPU if Xvfb or GPU fails.
 """
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
 
 
-def _colmap_env() -> dict[str, str]:
-    """Return env with QT_QPA_PLATFORM=offscreen so COLMAP GPU works headless."""
-    env = dict(os.environ)
-    env["QT_QPA_PLATFORM"] = "offscreen"
-    return env
+def _has_xvfb() -> bool:
+    return shutil.which("xvfb-run") is not None
 
 
 def _run(cmd: list[str], label: str, timeout: int = 1800) -> subprocess.CompletedProcess:
@@ -25,9 +24,7 @@ def _run(cmd: list[str], label: str, timeout: int = 1800) -> subprocess.Complete
     print(f"    ▸ {label}")
     print(f"      $ {' '.join(cmd)}")
     t0 = time.time()
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=_colmap_env(),
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     elapsed = time.time() - t0
 
     if result.returncode != 0:
@@ -46,36 +43,56 @@ def _run(cmd: list[str], label: str, timeout: int = 1800) -> subprocess.Complete
 
 
 def feature_extraction(workspace: str) -> bool:
-    # COLMAP GPU SIFT requires OpenGL — unavailable in headless containers.
-    # CPU SIFT is fast enough (~30s for 300 frames) and works everywhere.
     db = os.path.join(workspace, "database.db")
     images = os.path.join(workspace, "images")
-    cmd = [
+
+    base_cmd = [
         "colmap", "feature_extractor",
         "--database_path", db,
         "--image_path", images,
         "--ImageReader.camera_model", "OPENCV",
         "--ImageReader.single_camera", "1",
-        "--SiftExtraction.use_gpu", "0",
         "--SiftExtraction.max_num_features", "8192",
     ]
-    result = _run(cmd, "Feature extraction (CPU)")
+
+    # Try GPU via xvfb-run first
+    if _has_xvfb():
+        gpu_cmd = ["xvfb-run", "--auto-servernum", "-s", "-screen 0 1920x1080x24"] + base_cmd + [
+            "--SiftExtraction.use_gpu", "1",
+        ]
+        result = _run(gpu_cmd, "Feature extraction (GPU via Xvfb)")
+        if result.returncode == 0:
+            return True
+        print("    ↻ GPU extraction failed — falling back to CPU …")
+
+    cpu_cmd = base_cmd + ["--SiftExtraction.use_gpu", "0"]
+    result = _run(cpu_cmd, "Feature extraction (CPU)")
     return result.returncode == 0
 
 
 def sequential_matching(workspace: str) -> bool:
     db = os.path.join(workspace, "database.db")
-    # GPU matching also needs OpenGL — use CPU.
     # Loop detection disabled — requires a vocab tree file that most installs
     # don't ship.  Sequential overlap of 10 is sufficient for video frames.
-    cmd = [
+    base_cmd = [
         "colmap", "sequential_matcher",
         "--database_path", db,
-        "--SiftMatching.use_gpu", "0",
         "--SequentialMatching.overlap", "10",
         "--SequentialMatching.loop_detection", "0",
     ]
-    result = _run(cmd, "Sequential matching (CPU)")
+
+    # Try GPU via xvfb-run first
+    if _has_xvfb():
+        gpu_cmd = ["xvfb-run", "--auto-servernum", "-s", "-screen 0 1920x1080x24"] + base_cmd + [
+            "--SiftMatching.use_gpu", "1",
+        ]
+        result = _run(gpu_cmd, "Sequential matching (GPU via Xvfb)")
+        if result.returncode == 0:
+            return True
+        print("    ↻ GPU matching failed — falling back to CPU …")
+
+    cpu_cmd = base_cmd + ["--SiftMatching.use_gpu", "0"]
+    result = _run(cpu_cmd, "Sequential matching (CPU)")
     return result.returncode == 0
 
 
@@ -145,6 +162,12 @@ def run_colmap(workspace: str) -> dict:
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     ])
     print(f"  Input images: {num_input}")
+
+    if _has_xvfb():
+        print("  Xvfb:        available (GPU SIFT enabled)")
+    else:
+        print("  Xvfb:        not found (CPU-only mode)")
+        print("               Install with: apt-get install -y xvfb")
 
     if not feature_extraction(workspace):
         return {"success": False, "error": "Feature extraction failed"}

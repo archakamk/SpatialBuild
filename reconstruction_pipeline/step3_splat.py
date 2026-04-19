@@ -52,7 +52,7 @@ def train_splat(
         project_root,
         "--output", ply_path,
         "-n", str(iterations),
-        "--save-every", "0",
+        "--save-every", "5000",
     ]
 
     env = dict(os.environ)
@@ -105,7 +105,7 @@ def main():
     parser.add_argument("--colmap-dir", required=True,
                         help="COLMAP sparse/0/ directory or workspace root")
     parser.add_argument("--output", required=True, help="Output directory for splat.ply")
-    parser.add_argument("--iterations", "-n", type=int, default=2000)
+    parser.add_argument("--iterations", "-n", type=int, default=30000)
     parser.add_argument("--opensplat-bin", default=None, help="Override path to opensplat binary")
     args = parser.parse_args()
     summary = train_splat(args.colmap_dir, args.output, args.iterations, args.opensplat_bin)

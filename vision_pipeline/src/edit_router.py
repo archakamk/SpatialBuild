@@ -14,7 +14,18 @@ import numpy as np
 
 from . import config
 
-VALID_ACTIONS = {"recolor", "retexture", "remove"}
+VALID_ACTIONS = {"recolor", "retexture", "remove", "place_image"}
+
+_FRAME_PATTERNS = ("{idx:06d}.jpg", "{idx:05d}.jpg", "frame_{idx:06d}.jpg", "frame_{idx:05d}.jpg")
+
+
+def find_frame(directory: Path, idx: int) -> Path:
+    """Try multiple naming conventions and return the first that exists."""
+    for pattern in _FRAME_PATTERNS:
+        p = directory / pattern.format(idx=idx)
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"No frame found for index {idx} in {directory}")
 
 
 def load_commands(path: str | Path) -> list[dict]:
@@ -87,10 +98,7 @@ class EditRouter:
         params = command.get("params", {})
 
         # ── 1. Load anchor frame ────────────────────────────────────────
-        anchor_path = frames_dir / f"frame_{anchor_idx:06d}.jpg"
-        if not anchor_path.exists():
-            raise FileNotFoundError(f"Anchor frame not found: {anchor_path}")
-
+        anchor_path = find_frame(frames_dir, anchor_idx)
         anchor_bgr = cv2.imread(str(anchor_path))
         anchor_rgb = cv2.cvtColor(anchor_bgr, cv2.COLOR_BGR2RGB)
 
@@ -122,8 +130,9 @@ class EditRouter:
         # ── 5. Apply edit to each frame ─────────────────────────────────
         edited: dict[int, np.ndarray] = {}
         for fidx, mask in sorted(masks.items()):
-            fpath = frames_dir / f"frame_{fidx:06d}.jpg"
-            if not fpath.exists():
+            try:
+                fpath = find_frame(frames_dir, fidx)
+            except FileNotFoundError:
                 continue
             bgr = cv2.imread(str(fpath))
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -151,5 +160,9 @@ class EditRouter:
 
         if action == "remove":
             return self.object_remover.remove_object(image, mask)
+
+        if action == "place_image":
+            image_file = params.get("image", "")
+            return self.surface_editor.place_image(image, mask, image_file)
 
         raise ValueError(f"Unknown action: {action}")

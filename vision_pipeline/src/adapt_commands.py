@@ -115,6 +115,14 @@ def _convert_one(cmd: dict, fps: float) -> dict:
     elif action == "remove":
         out["params"] = {}
 
+    elif action == "add":
+        item = (params.get("item") or "").lower()
+        if any(kw in item for kw in ("painting", "picture", "image", "photo", "poster")):
+            out["action"] = "place_image"
+            out["params"]["image"] = params.get("image", "painting.jpg")
+        else:
+            out["params"] = params
+
     else:
         out["params"] = params
 

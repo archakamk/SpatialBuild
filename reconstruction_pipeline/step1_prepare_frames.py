@@ -105,8 +105,8 @@ def main():
                         help=f"Directory with extracted video frames (default: {default_frames})")
     parser.add_argument("--workspace", default=default_ws,
                         help=f"COLMAP workspace directory (default: {default_ws})")
-    parser.add_argument("--max-frames", type=int, default=300,
-                        help="Max frames to keep (default: 300)")
+    parser.add_argument("--max-frames", type=int, default=600,
+                        help="Max frames to keep (default: 600)")
     args = parser.parse_args()
 
     summary = prepare_frames(args.frames_dir, args.workspace, target_max=args.max_frames)
